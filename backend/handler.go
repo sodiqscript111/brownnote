@@ -17,15 +17,6 @@ type api struct{ checker spellChecker }
 
 var wordPattern = regexp.MustCompile(`^\p{L}[\p{L}\p{M}]*('\p{L}[\p{L}\p{M}]*)*$`)
 
-func jsonResponse(c *gin.Context, status int, value any) {
-	c.Header("Cache-Control", "no-store")
-	c.Header("X-Content-Type-Options", "nosniff")
-	c.JSON(status, value)
-}
-func fail(c *gin.Context, status int, message string) {
-	jsonResponse(c, status, gin.H{"error": message})
-}
-
 func (a *api) serveCheck(c *gin.Context) {
 	r := c.Request
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))

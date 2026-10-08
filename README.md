@@ -45,7 +45,8 @@ Drafts remain in this browser through the original localStorage key. The reusabl
 | `backend/main.go` | Application startup and graceful shutdown |
 | `backend/config.go` | Command-line settings, request limits and server timeouts |
 | `backend/router.go` | Gin routes, recovery middleware and static files |
-| `backend/handler.go` | Request validation, batch checking and JSON responses |
+| `backend/handler.go` | Request validation and batch checking |
+| `backend/response.go` | Shared JSON response headers and error responses |
 | `backend/checker.go` | Dictionary loading, normalization and spelling suggestions |
 | `backend/dictionary/` | Pinned English dictionary, source and license notices |
 
