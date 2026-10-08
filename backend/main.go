@@ -40,9 +40,6 @@ type checker struct {
 	mu   sync.Mutex
 	dict *gospell.GoSpell
 }
-
-// Handlers depend on behavior, not the dictionary implementation.
-// Implementations must support concurrent calls (checker protects its library).
 type spellChecker interface{ check(string) (result, error) }
 type api struct{ checker spellChecker }
 
@@ -61,8 +58,6 @@ func newChecker() (*checker, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Case-insensitive queries still recognize proper nouns and contractions such as I.
-	// Keep the actual dictionary's case rules by trying uppercase too.
 	return &checker{dict: d}, nil
 }
 
@@ -71,7 +66,6 @@ func normalize(word string) string {
 }
 
 func (c *checker) check(word string) (result, error) {
-	// gospell's lazy surface lookup mutates internal maps even in Spell.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r := result{Word: word, Correct: c.dict.Spell(word) || c.dict.Spell(strings.ToUpper(word)), Suggestions: []string{}}

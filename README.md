@@ -2,6 +2,8 @@
 
 A Svelte 5 text editor with a Go spelling API. The existing brown UI and page layout are preserved. No database, Redis, accounts, or server-side document storage.
 
+Read [Project decisions](PROJECT_DECISIONS.md) for the rationale behind the editor, API, caching and reliability choices, along with their trade-offs.
+
 ## Run locally
 
 Requirements: Node 22.12+ (or 20.19+) and Go 1.25.3+. Normal builds need no C compiler or native Hunspell installation. The race detector requires a supported C compiler.

@@ -49,7 +49,7 @@
         spell = draft.spell !== false;
         font = Object.hasOwn(fonts, draft.font) ? draft.font : 'mono';
       }
-    } catch { /* An unavailable or invalid draft leaves a fresh document. */ }
+    } catch {}
     ready = true;
   });
 
@@ -64,8 +64,6 @@
   });
 
   function updateCursor(event) { cursor = event.currentTarget.selectionStart; }
-
-  // Each edit invalidates the old request immediately; network work waits for idle.
   $effect(() => {
     if (!ready) return;
     const snapshot = text, enabled = spell, isComposing = composing;
@@ -78,7 +76,6 @@
   onDestroy(() => { checking.cancel(); client.cancel(); });
 
   $effect(() => {
-    // Re-align after edits or font changes alter wrapping/scrollable height.
     text; font; results;
     tick().then(() => {
       if (mirror && editor) { mirror.scrollTop = editor.scrollTop; mirror.scrollLeft = editor.scrollLeft; }
@@ -96,7 +93,6 @@
   function clicked(event) {
     updateCursor(event); popup = null;
     if (!spell || composing || editor.selectionStart !== editor.selectionEnd) return;
-    // The mirror is non-interactive; native textarea clicks and selections still work.
     for (const mark of mirror.querySelectorAll('.misspelled')) {
       if ([...mark.getClientRects()].some(r => event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom)) {
         const token = mistakes.find(t => t.start === Number(mark.dataset.start));

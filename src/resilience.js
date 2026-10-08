@@ -15,8 +15,6 @@ export function abortableSleep(ms, signal) {
     signal.addEventListener('abort', cancel, { once: true });
   });
 }
-
-// Includes response-body reading, and enforces deadlines even if a fetch ignores abort.
 export async function attemptJSON(fetcher, url, body, signal, timeoutMs) {
   const attempt = new AbortController();
   let timer, cancel;
@@ -40,7 +38,6 @@ export async function attemptJSON(fetcher, url, body, signal, timeoutMs) {
     }
     if (!response.ok) {
       const retryable = [502, 503, 504].includes(response.status);
-      // Release an unused error body/connection before waiting to retry.
       if (response.body?.cancel) await response.body.cancel().catch(() => {});
       throw new ServiceError('Spelling service unavailable. Your text is safe; edit to retry.', retryable);
     }
@@ -79,7 +76,6 @@ export class CircuitBreaker {
     }
   }
   cancel(permit) {
-    // A user edit is not a service failure; allow a replacement recovery probe.
     if (permit === this.probe && this.state === 'half-open') { this.state = 'open'; this.probe = null; }
   }
 }

@@ -1,6 +1,4 @@
 import { abortableSleep, attemptJSON, CircuitBreaker, ServiceError } from './resilience.js';
-
-// Offsets are UTF-16 offsets, matching textarea.selectionStart/selectionEnd.
 export const normalize = word => word.normalize('NFC').replaceAll('’', "'").toLowerCase();
 
 export function debouncer(callback, delay = 500) {
@@ -61,8 +59,6 @@ export function decorations(text, results) {
   return tokenize(text).filter(token => results.get(token.key)?.correct === false)
     .map(token => ({ ...token, suggestions: results.get(token.key).suggestions }));
 }
-
-// Current-document results are transient; the reusable cross-edit cache is bounded.
 export class SpellClient {
   constructor({ fetcher = (...args) => globalThis.fetch(...args), url = '/api/check', cache = new LRUCache(),
     timeoutMs = 15000, retryDelays = [1000, 2000], random = Math.random, sleep = abortableSleep,
@@ -113,7 +109,6 @@ export class SpellClient {
         } catch (error) {
           if (revision !== this.revision || controller.signal.aborted) return null;
           if (!error.retryable || attempt >= retries.length) throw error;
-          // +/-20% jitter spreads simultaneous clients without extra dependencies.
           await this.sleep(Math.round(retries[attempt] * (0.8 + this.random() * 0.4)), controller.signal);
         }
       }
@@ -124,7 +119,6 @@ export class SpellClient {
         if (!item || !expected.has(item.word) || received.has(item.word) || typeof item.correct !== 'boolean' || !Array.isArray(item.suggestions) || item.suggestions.length > 5 || item.suggestions.some(s => typeof s !== 'string' || s.length > 256)) throw new Error('Invalid spelling response');
         received.add(item.word);
       }
-      // Validate the entire response before touching the cache.
       for (const item of data.results) {
         this.cache.set(item.word, item); results.set(item.word, item);
       }
@@ -133,7 +127,7 @@ export class SpellClient {
     } catch (error) {
       if (revision !== this.revision || controller.signal.aborted || error.name === 'AbortError') return null;
       if (error instanceof ServiceError && error.retryable) this.breaker.failure(permit);
-      else this.breaker.success(); // A responsive rejection is not an outage.
+      else this.breaker.success();
       if (this.breaker.state === 'open') throw new ServiceError(`Spelling paused for ${Math.ceil(this.breaker.cooldownMs / 1000)}s after repeated failures. Your text is safe; edit after the pause to retry.`);
       throw error;
     } finally {
