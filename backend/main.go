@@ -41,6 +41,11 @@ type checker struct {
 	dict *gospell.GoSpell
 }
 
+// Handlers depend on behavior, not the dictionary implementation.
+// Implementations must support concurrent calls (checker protects its library).
+type spellChecker interface{ check(string) (result, error) }
+type api struct{ checker spellChecker }
+
 func newChecker() (*checker, error) {
 	aff, err := dictionary.Open("dictionary/en_US.aff")
 	if err != nil {
@@ -101,7 +106,7 @@ func fail(w http.ResponseWriter, status int, message string) {
 	jsonResponse(w, status, map[string]string{"error": message})
 }
 
-func (c *checker) serveCheck(w http.ResponseWriter, r *http.Request) {
+func (a *api) serveCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		fail(w, 405, "use POST")
@@ -159,7 +164,7 @@ func (c *checker) serveCheck(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		checked, err := c.check(word)
+		checked, err := a.checker.check(word)
 		if err != nil {
 			log.Printf("spell check failed: %v", err)
 			fail(w, 500, "spell checker unavailable")
@@ -170,9 +175,9 @@ func (c *checker) serveCheck(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"results": results})
 }
 
-func handler(c *checker, staticDir string) http.Handler {
+func handler(c spellChecker, staticDir string) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/check", c.serveCheck)
+	mux.HandleFunc("/api/check", (&api{checker: c}).serveCheck)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { fail(w, 404, "API route not found") })
 	mux.Handle("/", http.FileServer(http.Dir(staticDir)))
 	return mux

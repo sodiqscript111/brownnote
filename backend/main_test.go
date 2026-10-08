@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,7 +47,7 @@ func request(c *checker, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("POST", "/api/check", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	c.serveCheck(w, r)
+	(&api{checker: c}).serveCheck(w, r)
 	return w
 }
 
@@ -87,13 +88,13 @@ func TestValidation(t *testing.T) {
 	}
 	r := httptest.NewRequest("GET", "/api/check", nil)
 	w = httptest.NewRecorder()
-	c.serveCheck(w, r)
+	(&api{checker: c}).serveCheck(w, r)
 	if w.Code != 405 || w.Header().Get("Allow") != "POST" {
 		t.Fatal(w.Code)
 	}
 	r = httptest.NewRequest("POST", "/api/check", bytes.NewBufferString(`{"words":[]}`))
 	w = httptest.NewRecorder()
-	c.serveCheck(w, r)
+	(&api{checker: c}).serveCheck(w, r)
 	if w.Code != 415 {
 		t.Fatal(w.Code)
 	}
@@ -128,5 +129,36 @@ func BenchmarkSuggestions(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = c.check("helo")
+	}
+}
+
+type checkerFunc func(string) (result, error)
+
+func (f checkerFunc) check(word string) (result, error) { return f(word) }
+
+func TestInjectedCheckerFailure(t *testing.T) {
+	calls := 0
+	h := handler(checkerFunc(func(word string) (result, error) { calls++; return result{}, errors.New("dictionary failure") }), t.TempDir())
+	r := httptest.NewRequest("POST", "/api/check", strings.NewReader(`{"words":["hello"]}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if calls != 1 || w.Code != 500 || strings.Contains(w.Body.String(), "dictionary failure") {
+		t.Fatalf("%d calls, status %d, body %s", calls, w.Code, w.Body.String())
+	}
+}
+
+func TestInjectedCheckerDeduplication(t *testing.T) {
+	calls := 0
+	h := handler(checkerFunc(func(word string) (result, error) {
+		calls++
+		return result{Word: word, Correct: true, Suggestions: []string{}}, nil
+	}), t.TempDir())
+	r := httptest.NewRequest("POST", "/api/check", strings.NewReader(`{"words":["HELLO","hello"]}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if calls != 1 || w.Code != 200 {
+		t.Fatalf("%d calls, status %d", calls, w.Code)
 	}
 }

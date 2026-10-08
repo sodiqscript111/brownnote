@@ -38,6 +38,7 @@ Drafts remain in this browser through the original localStorage key. The reusabl
 | `src/App.svelte` | Existing page shell |
 | `src/Editor.svelte` | Textarea, debounce, underline mirror, popup, corrections and selection |
 | `src/spelling.js` | Positioned tokens, normalization, bounded LRU, batched requests, stale-response protection |
+| `src/resilience.js` | Abortable delays, request deadlines and circuit breaker |
 | `src/style.css` | Existing appearance plus underline and popup styles |
 | `backend/main.go` | REST API, startup dictionary, validation, timeouts, static serving and shutdown |
 | `backend/dictionary/` | Pinned English dictionary, source and license notices |
@@ -73,7 +74,15 @@ The server independently normalizes and deduplicates inputs. Results follow firs
 
 Limits: **128 KiB body**, **4096 words**, **64 code points per word**, **five suggestions**. Words must contain letters with optional combining marks and internal apostrophes. Missing/non-array words, punctuation inside a word, unknown fields, malformed or trailing JSON are rejected. JSON errors: 400 invalid input, 405 wrong method, 413 body too large, 415 wrong content type, 500 checker failure. Unknown `/api/` paths return 404. Read/header/write/idle timeouts are explicit; cancelled requests stop between words.
 
-The browser also checks batch limits, times out after 15 seconds, and validates the entire response before caching. Same-origin hosting is the default. `VITE_API_URL` can override the endpoint at build time; a separate origin requires deliberately configured reverse proxy/CORS handling, which is not enabled here.
+The browser also checks batch limits, enforces a 15-second deadline per attempt (including response-body reading), and validates the entire response before caching. Same-origin hosting is the default. `VITE_API_URL` can override the endpoint at build time; a separate origin requires deliberately configured reverse proxy/CORS handling, which is not enabled here.
+
+## Retries, circuit breaker and dependency injection
+
+Network failures, timeouts and HTTP 502/503/504 get at most two retries, with delays of about one and two seconds and ±20% jitter. Other HTTP errors and malformed responses are not retried. Checking is read-only, so repeating a batch is safe. Worst-case duration is about 49 seconds for three timed-out attempts; editing, disabling checking or leaving the editor cancels both requests and retry delays immediately.
+
+After three consecutive checking operations exhaust their retries, the client circuit opens for 30 seconds. This pauses uncached network checks; it does not interrupt editing or discard cached spelling results. The next edit after cooldown permits one recovery attempt, without retries. Success closes the circuit; another temporary failure restarts cooldown. Cancelled work never counts as a failure. Recovery is triggered by an edit or toggling checking, not a background polling loop.
+
+Dependency injection stays small: `SpellClient` accepts fetch, cache, timeout, retry delays, random source, sleep and breaker dependencies. `CircuitBreaker` accepts a clock. Go's HTTP handler accepts a `spellChecker` interface; the production checker loads once and protects the library with a mutex. Tests can substitute these dependencies without real delays or dictionary failures. There is no DI container or resilience package. The breaker belongs in the browser-to-API boundary because the Go backend has no remote dependency to retry; server request limits and timeouts remain in place.
 
 ## Why debounce, batching and LRU
 
@@ -95,7 +104,7 @@ go vet ./...
 go test -bench Benchmark -benchmem -run NotATest -benchtime=100ms
 ```
 
-JavaScript tests cover debounce/cancellation, LRU eviction/refresh/reuse, native fetch, repeated words, punctuation/contractions/case, Unicode offsets, individual corrections, insertion/deletion, stale responses, invalid responses, failures and batch limits. Go tests exercise the actual embedded dictionary, suggestions, deduplication, input/size validation and concurrent requests.
+JavaScript tests cover debounce/cancellation, LRU eviction/refresh/reuse, native fetch, repeated words, punctuation/contractions/case, Unicode offsets, individual corrections, insertion/deletion, stale responses, invalid responses, failures and batch limits. Resilience tests cover retry limits/jitter, non-retryable errors, cancellation during waits, strict deadlines, circuit cooldown, single recovery probes and cached checks while open. Go tests exercise the actual embedded dictionary, suggestions, deduplication, input/size validation, concurrent requests and injected checker failures.
 
 Browser checks against the real Go server cover red underlines, clicked suggestions, correcting one repeated occurrence, adjusted caret position, fonts, keyboard correction, scrolling and the spell toggle. Representative warm-library benchmarks on this laptop were about **408ns per validation** and **3.6ms per suggestion query** for `hello`/`helo`, not latency guarantees for every word or batch.
 

@@ -1,3 +1,5 @@
+import { abortableSleep, attemptJSON, CircuitBreaker, ServiceError } from './resilience.js';
+
 // Offsets are UTF-16 offsets, matching textarea.selectionStart/selectionEnd.
 export const normalize = word => word.normalize('NFC').replaceAll('’', "'").toLowerCase();
 
@@ -62,10 +64,18 @@ export function decorations(text, results) {
 
 // Current-document results are transient; the reusable cross-edit cache is bounded.
 export class SpellClient {
-  constructor({ fetcher = (...args) => globalThis.fetch(...args), url = '/api/check', cache = new LRUCache() } = {}) {
+  constructor({ fetcher = (...args) => globalThis.fetch(...args), url = '/api/check', cache = new LRUCache(),
+    timeoutMs = 15000, retryDelays = [1000, 2000], random = Math.random, sleep = abortableSleep,
+    breaker = new CircuitBreaker() } = {}) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || retryDelays.some(ms => !Number.isFinite(ms) || ms < 0)) throw new Error('Invalid request timing');
     this.fetcher = fetcher; this.url = url; this.cache = cache; this.revision = 0;
+    this.timeoutMs = timeoutMs; this.retryDelays = [...retryDelays]; this.random = random; this.sleep = sleep; this.breaker = breaker;
+    this.releaseProbe = null;
   }
-  cancel() { this.revision++; this.controller?.abort(); }
+  cancel() {
+    this.revision++; this.controller?.abort();
+    this.releaseProbe?.(); this.releaseProbe = null;
+  }
   cached(text) {
     const results = new Map();
     for (const token of tokenize(text)) {
@@ -88,31 +98,47 @@ export class SpellClient {
     if (missing.length > 4096 || new TextEncoder().encode(JSON.stringify({ words: missing })).length > 128 * 1024) {
       throw new Error('This batch exceeds the spelling limit; try a shorter document.');
     }
-    let response;
-    let timedOut = false;
-    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 15000);
+    const permit = this.breaker.begin();
+    const releaseProbe = () => this.breaker.cancel(permit);
+    this.releaseProbe = releaseProbe;
     try {
-      response = await this.fetcher(this.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ words: missing }), signal: controller.signal });
-      if (!response.ok) throw new Error('Spelling service unavailable. Your text is safe; edit to retry.');
-      const data = await response.json();
+      const body = JSON.stringify({ words: missing });
+      let data;
+      const retries = permit.probe ? [] : this.retryDelays;
+      for (let attempt = 0; ; attempt++) {
+        if (controller.signal.aborted) return null;
+        try {
+          data = await attemptJSON(this.fetcher, this.url, body, controller.signal, this.timeoutMs);
+          break;
+        } catch (error) {
+          if (revision !== this.revision || controller.signal.aborted) return null;
+          if (!error.retryable || attempt >= retries.length) throw error;
+          // +/-20% jitter spreads simultaneous clients without extra dependencies.
+          await this.sleep(Math.round(retries[attempt] * (0.8 + this.random() * 0.4)), controller.signal);
+        }
+      }
       if (revision !== this.revision) return null;
-      if (!Array.isArray(data.results) || data.results.length !== missing.length) throw new Error('Invalid spelling response');
+      if (!Array.isArray(data?.results) || data.results.length !== missing.length) throw new Error('Invalid spelling response');
       const expected = new Set(missing), received = new Set();
       for (const item of data.results) {
-        if (!expected.has(item.word) || received.has(item.word) || typeof item.correct !== 'boolean' || !Array.isArray(item.suggestions) || item.suggestions.length > 5 || item.suggestions.some(s => typeof s !== 'string' || s.length > 256)) throw new Error('Invalid spelling response');
+        if (!item || !expected.has(item.word) || received.has(item.word) || typeof item.correct !== 'boolean' || !Array.isArray(item.suggestions) || item.suggestions.length > 5 || item.suggestions.some(s => typeof s !== 'string' || s.length > 256)) throw new Error('Invalid spelling response');
         received.add(item.word);
       }
       // Validate the entire response before touching the cache.
       for (const item of data.results) {
         this.cache.set(item.word, item); results.set(item.word, item);
       }
+      this.breaker.success();
       return { results, revision };
     } catch (error) {
-      if (revision !== this.revision) return null;
-      if (timedOut) throw new Error('Spelling service timed out. Your text is safe; edit to retry.');
-      if (error.name === 'AbortError') return null;
-      if (error instanceof TypeError) throw new Error('Spelling service unreachable. Your text is safe; edit to retry.');
+      if (revision !== this.revision || controller.signal.aborted || error.name === 'AbortError') return null;
+      if (error instanceof ServiceError && error.retryable) this.breaker.failure(permit);
+      else this.breaker.success(); // A responsive rejection is not an outage.
+      if (this.breaker.state === 'open') throw new ServiceError(`Spelling paused for ${Math.ceil(this.breaker.cooldownMs / 1000)}s after repeated failures. Your text is safe; edit after the pause to retry.`);
       throw error;
-    } finally { clearTimeout(timeout); }
+    } finally {
+      releaseProbe();
+      if (this.releaseProbe === releaseProbe) this.releaseProbe = null;
+    }
   }
 }
