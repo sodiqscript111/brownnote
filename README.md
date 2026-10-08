@@ -6,6 +6,30 @@ Read [What I implemented](PROJECT_DECISIONS.md) for a short list of the editor, 
 
 ## Run locally
 
+### macOS: one command
+
+Download or clone this project, open Terminal in its folder, then run:
+
+```sh
+bash scripts/start-macos.sh
+```
+
+The launcher reuses compatible Node/npm and Go installations. If needed, it installs Homebrew using its official installer, then installs Node.js 24/npm and Go. It installs the project's locked npm dependencies, downloads Go modules, builds both parts, starts the server and opens **http://127.0.0.1:8080** in your browser. No separate frontend terminal is needed.
+
+Internet access is needed for installation. A first Homebrew install may prompt for your Mac administrator password or developer tools; complete its prompts in the same terminal. Automatic tool installation depends on [Homebrew's supported macOS configurations](https://docs.brew.sh/Installation). Macs with compatible tools already installed can skip Homebrew entirely.
+
+Keep Terminal open while using the editor. **Ctrl+C** stops the server. Run the same command again after changing code; it rebuilds the project. The generated server binary lives in the ignored `.local/` folder. The launcher does not edit your shell profile.
+
+If port 8080 is busy:
+
+```sh
+BROWNNOTE_PORT=8081 bash scripts/start-macos.sh
+```
+
+The launcher has been syntax-checked and tested with simulated macOS commands on Windows; installation and browser opening still require verification on a real Mac.
+
+### Manual setup
+
 Requirements: Node 22.12+ (or 20.19+) and Go 1.25.3+. Normal builds need no C compiler or native Hunspell installation. The race detector requires a supported C compiler.
 
 From this project folder:
@@ -105,6 +129,7 @@ Dependency injection stays small: `SpellClient` accepts fetch, cache, timeout, r
 
 ```sh
 npm test
+npm run test:launcher
 npm run build
 cd backend
 go test ./...

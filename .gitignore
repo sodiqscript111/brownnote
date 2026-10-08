@@ -1,4 +1,5 @@
 node_modules/
+.local/
 .idea/
 dist/
 .sites-runtime/
