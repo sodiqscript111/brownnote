@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/client9/gospell"
+	"github.com/gin-gonic/gin"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -89,29 +90,23 @@ func (c *checker) check(word string) (result, error) {
 	return r, nil
 }
 
-func jsonResponse(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+func jsonResponse(c *gin.Context, status int, value any) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.JSON(status, value)
 }
-func fail(w http.ResponseWriter, status int, message string) {
-	jsonResponse(w, status, map[string]string{"error": message})
+func fail(c *gin.Context, status int, message string) {
+	jsonResponse(c, status, gin.H{"error": message})
 }
 
-func (a *api) serveCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		fail(w, 405, "use POST")
-		return
-	}
+func (a *api) serveCheck(c *gin.Context) {
+	r := c.Request
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || contentType != "application/json" {
-		fail(w, 415, "Content-Type must be application/json")
+		fail(c, 415, "Content-Type must be application/json")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	r.Body = http.MaxBytesReader(c.Writer, r.Body, maxBody)
 	defer r.Body.Close()
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -121,23 +116,23 @@ func (a *api) serveCheck(w http.ResponseWriter, r *http.Request) {
 	if err := dec.Decode(&request); err != nil {
 		var size *http.MaxBytesError
 		if errors.As(err, &size) {
-			fail(w, 413, "request exceeds 128 KiB")
+			fail(c, 413, "request exceeds 128 KiB")
 		} else {
-			fail(w, 400, "invalid JSON body")
+			fail(c, 400, "invalid JSON body")
 		}
 		return
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		var size *http.MaxBytesError
 		if errors.As(err, &size) {
-			fail(w, 413, "request exceeds 128 KiB")
+			fail(c, 413, "request exceeds 128 KiB")
 		} else {
-			fail(w, 400, "body must contain one JSON object")
+			fail(c, 400, "body must contain one JSON object")
 		}
 		return
 	}
 	if request.Words == nil || len(request.Words) > maxWords {
-		fail(w, 400, "words must be an array with at most 4096 entries")
+		fail(c, 400, "words must be an array with at most 4096 entries")
 		return
 	}
 	unique := make([]string, 0, len(request.Words))
@@ -145,7 +140,7 @@ func (a *api) serveCheck(w http.ResponseWriter, r *http.Request) {
 	for _, raw := range request.Words {
 		word := normalize(raw)
 		if !utf8.ValidString(word) || utf8.RuneCountInString(word) > 64 || !wordPattern.MatchString(word) {
-			fail(w, 400, "each word must contain 1–64 letters, optionally joined by apostrophes")
+			fail(c, 400, "each word must contain 1–64 letters, optionally joined by apostrophes")
 			return
 		}
 		if !seen[word] {
@@ -161,26 +156,44 @@ func (a *api) serveCheck(w http.ResponseWriter, r *http.Request) {
 		checked, err := a.checker.check(word)
 		if err != nil {
 			log.Printf("spell check failed: %v", err)
-			fail(w, 500, "spell checker unavailable")
+			fail(c, 500, "spell checker unavailable")
 			return
 		}
 		results = append(results, checked)
 	}
-	jsonResponse(w, 200, map[string]any{"results": results})
+	jsonResponse(c, 200, map[string]any{"results": results})
 }
 
 func handler(c spellChecker, staticDir string) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/check", (&api{checker: c}).serveCheck)
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { fail(w, 404, "API route not found") })
-	mux.Handle("/", http.FileServer(http.Dir(staticDir)))
-	return mux
+	router := gin.New()
+	router.RedirectTrailingSlash = false
+	router.RedirectFixedPath = false
+	_ = router.SetTrustedProxies(nil)
+	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered any) {
+		fail(c, http.StatusInternalServerError, "internal server error")
+		c.Abort()
+	}))
+	router.POST("/api/check", (&api{checker: c}).serveCheck)
+	files := http.FileServer(http.Dir(staticDir))
+	router.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if path == "/api/check" {
+			c.Header("Allow", "POST")
+			fail(c, http.StatusMethodNotAllowed, "use POST")
+		} else if path == "/api" || strings.HasPrefix(path, "/api/") {
+			fail(c, http.StatusNotFound, "API route not found")
+		} else {
+			files.ServeHTTP(c.Writer, c.Request)
+		}
+	})
+	return router
 }
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	staticDir := flag.String("static", "../dist", "built frontend directory")
 	flag.Parse()
+	gin.SetMode(gin.ReleaseMode)
 	c, err := newChecker()
 	if err != nil {
 		log.Fatal(err)

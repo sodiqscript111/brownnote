@@ -1,6 +1,6 @@
 # Brownnote
 
-A Svelte 5 text editor with a Go spelling API. The existing brown UI and page layout are preserved. No database, Redis, accounts, or server-side document storage.
+A Svelte 5 text editor with a Go spelling API using Gin v1.12.0. The existing brown UI and page layout are preserved. No database, Redis, accounts, or server-side document storage.
 
 Read [Project decisions](PROJECT_DECISIONS.md) for the rationale behind the editor, API, caching and reliability choices, along with their trade-offs.
 
@@ -51,7 +51,9 @@ Tokens retain UTF-16 offsets, matching textarea selection positions. The tokeniz
 
 The backend uses [client9/gospell v0.9.2](https://github.com/client9/gospell), a pure-Go Hunspell dictionary reader. `NewGoSpellReader`, `Spell` and `Suggest(word, 5)` were verified through source inspection and `go doc` before integration. The US English dictionary is pinned to the commit in `backend/dictionary/SOURCE.txt`; its upstream license is included.
 
-The dictionary loads once at startup. Queries try normalized lowercase and uppercase forms to recognize proper nouns and `I` contractions case-insensitively. A mutex protects each validation/suggestion operation because lazy dictionary lookups mutate internal maps. Standard `net/http` handles concurrent requests; there are no per-word goroutines or worker pools. The server has no application response cache or document state; the library retains its own lazy dictionary surfaces.
+The dictionary loads once at startup. Queries try normalized lowercase and uppercase forms to recognize proper nouns and `I` contractions case-insensitively. A mutex protects each validation/suggestion operation because lazy dictionary lookups mutate internal maps. Gin handles routing and JSON responses on a standard `net/http.Server`, preserving explicit timeouts and graceful shutdown. There are no per-word goroutines or worker pools. The server has no application response cache or document state; the library retains its own lazy dictionary surfaces.
+
+The router uses `gin.New()` with recovery middleware returning a generic JSON 500 on panics. Strict JSON decoding remains explicit to reject unknown fields and trailing content while enforcing body limits. Unsupported methods on `/api/check` return JSON 405 with `Allow: POST`; unknown API routes return JSON 404. Static frontend files use the standard file server through Gin's fallback handler. Automatic path redirects and trusted proxy handling are disabled. Gin adds framework dependencies, but does not change the API contract or client code.
 
 ## API
 
@@ -106,7 +108,7 @@ go vet ./...
 go test -bench Benchmark -benchmem -run NotATest -benchtime=100ms
 ```
 
-JavaScript tests cover debounce/cancellation, LRU eviction/refresh/reuse, native fetch, repeated words, punctuation/contractions/case, Unicode offsets, individual corrections, insertion/deletion, stale responses, invalid responses, failures and batch limits. Resilience tests cover retry limits/jitter, non-retryable errors, cancellation during waits, strict deadlines, circuit cooldown, single recovery probes and cached checks while open. Go tests exercise the actual embedded dictionary, suggestions, deduplication, input/size validation, concurrent requests and injected checker failures.
+JavaScript tests cover debounce/cancellation, LRU eviction/refresh/reuse, native fetch, repeated words, punctuation/contractions/case, Unicode offsets, individual corrections, insertion/deletion, stale responses, invalid responses, failures and batch limits. Resilience tests cover retry limits/jitter, non-retryable errors, cancellation during waits, strict deadlines, circuit cooldown, single recovery probes and cached checks while open. Go tests exercise the actual embedded dictionary, suggestions, deduplication, input/size validation, concurrent requests injected checker failures, Gin routing/static files, cancellation and panic recovery.
 
 Browser checks against the real Go server cover red underlines, clicked suggestions, correcting one repeated occurrence, adjusted caret position, fonts, keyboard correction, scrolling and the spell toggle. Representative warm-library benchmarks on this laptop were about **408ns per validation** and **3.6ms per suggestion query** for `hello`/`helo`, not latency guarantees for every word or batch.
 

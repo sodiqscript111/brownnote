@@ -22,7 +22,9 @@ Using a JavaScript `Map` keeps the cache easy to inspect: reads refresh recency 
 
 ## A small Go API
 
-Go's standard `net/http` package provides the required routing, concurrent request handling, limits and timeouts without another server framework. `POST /api/check` accepts a batch of words and returns spelling results with up to five suggestions per incorrect word.
+The backend uses Gin v1.12.0 for routing, JSON responses and panic recovery. Its router runs on a standard `net/http.Server`, retaining explicit server timeouts and graceful shutdown. `POST /api/check` accepts a batch of words and returns spelling results with up to five suggestions per incorrect word.
+
+Gin provides a conventional place to extend route groups and middleware as the API grows. It introduces more dependencies than the original standard-library router. The migration keeps request decoding explicit: bounded bodies, rejection of unknown fields and trailing JSON, and the existing error contract remain intact. Static files are served through the router's fallback, and unsupported methods and unknown API paths return JSON errors. Proxy trust and automatic path redirects are disabled until deployment requires them.
 
 The implementation uses the pure-Go `client9/gospell` library with a bundled US English Hunspell-format dictionary. The library API was verified before integration. Embedding dictionary files makes the executable self-contained and avoids runtime downloads or a native Hunspell installation.
 

@@ -2,14 +2,24 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
+
+func TestMain(m *testing.M) {
+	gin.SetMode(gin.TestMode)
+	os.Exit(m.Run())
+}
 
 func load(t testing.TB) *checker {
 	t.Helper()
@@ -47,7 +57,7 @@ func request(c *checker, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("POST", "/api/check", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	(&api{checker: c}).serveCheck(w, r)
+	handler(c, "").ServeHTTP(w, r)
 	return w
 }
 
@@ -88,13 +98,13 @@ func TestValidation(t *testing.T) {
 	}
 	r := httptest.NewRequest("GET", "/api/check", nil)
 	w = httptest.NewRecorder()
-	(&api{checker: c}).serveCheck(w, r)
+	handler(c, "").ServeHTTP(w, r)
 	if w.Code != 405 || w.Header().Get("Allow") != "POST" {
 		t.Fatal(w.Code)
 	}
 	r = httptest.NewRequest("POST", "/api/check", bytes.NewBufferString(`{"words":[]}`))
 	w = httptest.NewRecorder()
-	(&api{checker: c}).serveCheck(w, r)
+	handler(c, "").ServeHTTP(w, r)
 	if w.Code != 415 {
 		t.Fatal(w.Code)
 	}
@@ -135,6 +145,73 @@ func BenchmarkSuggestions(b *testing.B) {
 type checkerFunc func(string) (result, error)
 
 func (f checkerFunc) check(word string) (result, error) { return f(word) }
+
+func TestGinRoutingAndStaticFiles(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{"index.html": "<title>Brownnote</title>", "editor.css": "body { color: brown; }"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := handler(checkerFunc(func(word string) (result, error) {
+		return result{Word: word, Correct: true, Suggestions: []string{}}, nil
+	}), dir)
+	for _, test := range []struct {
+		method, path string
+		status       int
+		body         string
+	}{
+		{"GET", "/", 200, "Brownnote"},
+		{"GET", "/editor.css", 200, "brown"},
+		{"GET", "/missing.css", 404, ""},
+		{"GET", "/api", 404, "API route not found"},
+		{"POST", "/api/missing", 404, "API route not found"},
+		{"POST", "/api/check/", 404, "API route not found"},
+		{"GET", "/API/check", 404, ""},
+		{"GET", "/api/check", 405, "use POST"},
+		{"PUT", "/api/check", 405, "use POST"},
+		{"OPTIONS", "/api/check", 405, "use POST"},
+	} {
+		t.Run(test.method+test.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(test.method, test.path, nil))
+			if w.Code != test.status || !strings.Contains(w.Body.String(), test.body) {
+				t.Fatalf("status %d, body %s", w.Code, w.Body.String())
+			}
+			if test.status == 405 && w.Header().Get("Allow") != "POST" {
+				t.Fatal("missing Allow header")
+			}
+			if strings.HasPrefix(test.path, "/api") && (w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.HasPrefix(w.Header().Get("Content-Type"), "application/json")) {
+				t.Fatal("missing API response headers")
+			}
+		})
+	}
+}
+
+func TestGinRecovery(t *testing.T) {
+	h := handler(checkerFunc(func(string) (result, error) { panic("private failure") }), t.TempDir())
+	r := httptest.NewRequest("POST", "/api/check", strings.NewReader(`{"words":["hello"]}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 500 || w.Body.String() != `{"error":"internal server error"}` {
+		t.Fatalf("status %d, body %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGinCancelledRequest(t *testing.T) {
+	calls := 0
+	h := handler(checkerFunc(func(string) (result, error) { calls++; return result{}, nil }), t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequest("POST", "/api/check", strings.NewReader(`{"words":["hello"]}`)).WithContext(ctx)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if calls != 0 || w.Body.Len() != 0 {
+		t.Fatalf("cancelled request checked %d words", calls)
+	}
+}
 
 func TestInjectedCheckerFailure(t *testing.T) {
 	calls := 0
