@@ -2,7 +2,7 @@
 
 A Svelte 5 text editor with a Go spelling API using Gin v1.12.0. The existing brown UI and page layout are preserved. No database, Redis, accounts, or server-side document storage.
 
-Read [Project decisions](PROJECT_DECISIONS.md) for the rationale behind the editor, API, caching and reliability choices, along with their trade-offs.
+Read [What I implemented](PROJECT_DECISIONS.md) for a short list of the editor, caching and reliability work.
 
 ## Run locally
 
@@ -42,7 +42,11 @@ Drafts remain in this browser through the original localStorage key. The reusabl
 | `src/spelling.js` | Positioned tokens, normalization, bounded LRU, batched requests, stale-response protection |
 | `src/resilience.js` | Abortable delays, request deadlines and circuit breaker |
 | `src/style.css` | Existing appearance plus underline and popup styles |
-| `backend/main.go` | REST API, startup dictionary, validation, timeouts, static serving and shutdown |
+| `backend/main.go` | Application startup and graceful shutdown |
+| `backend/config.go` | Command-line settings, request limits and server timeouts |
+| `backend/router.go` | Gin routes, recovery middleware and static files |
+| `backend/handler.go` | Request validation, batch checking and JSON responses |
+| `backend/checker.go` | Dictionary loading, normalization and spelling suggestions |
 | `backend/dictionary/` | Pinned English dictionary, source and license notices |
 
 Text remains in a native textarea. A non-interactive mirror underneath paints transparent text with red wavy underlines. Both layers share font, wrapping, padding, width and scroll offsets. Svelte updates keyed mirror segments without replacing the editable DOM, so asynchronous spelling results do not move the caret or change selection. Clicks are handled by the textarea against visible mirror word rectangles. `setRangeText` applies corrections, then the adjusted selection and scroll position are restored.
